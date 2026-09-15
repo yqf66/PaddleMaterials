@@ -15,6 +15,7 @@
 import numpy as np
 import paddle
 
+from ppmat.datasets.build_grid import BuildGrid
 from ppmat.datasets.graph_utils.infgcn_graph_utils import radius
 from ppmat.datasets.graph_utils.infgcn_graph_utils import radius_graph
 from ppmat.models.common.activation import NormActivation
@@ -1219,17 +1220,19 @@ class GPWNO(paddle.nn.Layer):
         return density, aux
 
     def get_grid(self, shape, device):
-        batchsize, size_x, size_y, size_z = shape[0], shape[1], shape[2], shape[3]
-        gridx = paddle.linspace(0, 1, size_x)
-        gridx = gridx.reshape(1, size_x, 1, 1, 1).repeat(
-            [batchsize, 1, size_y, size_z, 1]
+        """Build normalized Fourier coordinates, including both axis endpoints."""
+        spatial_shape = tuple(shape[1:4])
+        grid = BuildGrid(format="array")(
+            {
+                "shape": spatial_shape,
+                "voxel_vectors": np.diag(
+                    [1.0 / max(size - 1, 1) for size in spatial_shape]
+                ),
+            }
         )
-        gridy = paddle.linspace(0, 1, size_y)
-        gridy = gridy.reshape(1, 1, size_y, 1, 1).repeat(
-            [batchsize, size_x, 1, size_z, 1]
+        coordinates = paddle.to_tensor(
+            grid.cartesian_coordinates(), dtype=paddle.get_default_dtype()
+        ).to(device)
+        return coordinates.reshape([1, *spatial_shape, 3]).expand(
+            [shape[0], *spatial_shape, 3]
         )
-        gridz = paddle.linspace(0, 1, size_z)
-        gridz = gridz.reshape(1, 1, 1, size_z, 1).repeat(
-            [batchsize, size_x, size_y, 1, 1]
-        )
-        return paddle.cat((gridx, gridy, gridz), dim=-1).to(device)
