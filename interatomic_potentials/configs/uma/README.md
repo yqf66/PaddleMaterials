@@ -15,7 +15,7 @@ of this implementation.
 
 The supplied configurations use OMat24 rattled structures and OC20 S2EF
 structures with total-energy and atomic-force labels. Data are read through
-the corresponding `UMAOMat24Dataset` and `UMAOC20Dataset`, converted to
+the corresponding `OMat24Dataset` and `UMAOC20Dataset`, converted to
 `pgl.Graph`, and batched by `DefaultCollator`.
 
 | Field | Description |
@@ -23,8 +23,12 @@ the corresponding `UMAOMat24Dataset` and `UMAOC20Dataset`, converted to
 | `energy` | Structure energy |
 | `forces` | Atomic forces with shape `[num_atoms, 3]` |
 
-The dataset classes automatically download the prepared data when a local path
-is not provided. A configuration may also point to an existing ASE-LMDB split.
+OMat24Dataset downloads the official OMat24 rattled-500 train or val archive
+independently, with separate cache directories for each split. The OMat24
+configuration evaluates on val; no separate test split is configured. A local
+path may point directly to an ASE-LMDB file or a directory of shards.
+The 1M and sAlex packages are not configured here. OC20 currently retains the
+previous prepared package until its official replacement is provided.
 
 ## Models
 

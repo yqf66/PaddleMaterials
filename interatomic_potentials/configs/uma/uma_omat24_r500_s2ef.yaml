@@ -1,7 +1,7 @@
 Global:
   do_train: True
   do_eval: True
-  do_test: True
+  do_test: False
   label_names: ["energy", "forces"]
   graph_converter:
     __class_name__: FindPointsInSpheres
@@ -77,7 +77,7 @@ Metric:
 Dataset:
   train:
     dataset:
-      __class_name__: UMAOMat24Dataset
+      __class_name__: OMat24Dataset
       __init_params__:
         build_graph_cfg: ${Global.graph_converter}
         split: train
@@ -95,7 +95,7 @@ Dataset:
 
   val:
     dataset:
-      __class_name__: UMAOMat24Dataset
+      __class_name__: OMat24Dataset
       __init_params__:
         build_graph_cfg: ${Global.graph_converter}
         split: val
@@ -111,23 +111,6 @@ Dataset:
         drop_last: False
         batch_size: 4
 
-  test:
-    dataset:
-      __class_name__: UMAOMat24Dataset
-      __init_params__:
-        build_graph_cfg: ${Global.graph_converter}
-        split: test
-        property_names: ["energy", "forces"]
-    loader:
-      num_workers: 0
-      use_shared_memory: False
-      collate_fn: DefaultCollator
-    sampler:
-      __class_name__: BatchSampler
-      __init_params__:
-        shuffle: False
-        drop_last: False
-        batch_size: 4
 
 Predict:
   graph_converter: ${Global.graph_converter}

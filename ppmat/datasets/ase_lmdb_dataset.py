@@ -28,25 +28,15 @@ from paddle.io import Dataset
 from ppmat.datasets.build_structure import BuildStructure
 from ppmat.datasets.custom_data_type import ConcatNumpyWarper
 from ppmat.models import build_graph_converter
-from ppmat.utils import download
-from ppmat.utils import logger
-
-UMA_DATASET_URL = (
-    "https://paddle-org.bj.bcebos.com/paddlematerials/" "datasets/UMA/uma_datasets.zip"
-)
 
 
-class _UMAAseLMDBDataset(Dataset):
-    """Read one UMA split from compressed ASE-LMDB files."""
-
-    url: str
-    dataset_subdir: str
+class ASELMDBDataset(Dataset):
+    """Read structures and labels from compressed ASE-LMDB files."""
 
     def __init__(
         self,
         build_graph_cfg: dict[str, Any],
-        split: str,
-        path: str | None = None,
+        path: str,
         property_names: str | list[str] | tuple[str, ...] = ("energy", "forces"),
         build_structure_cfg: dict[str, Any] | None = None,
         pattern: str = "*.aselmdb",
@@ -57,16 +47,6 @@ class _UMAAseLMDBDataset(Dataset):
         transforms=None,
     ) -> None:
         super().__init__()
-        if split not in {"train", "val", "test"}:
-            raise ValueError(f"Unsupported split: {split}.")
-        if path is None or not osp.exists(path):
-            logger.message(
-                f"The UMA {self.dataset_subdir} {split} split is not found. "
-                "Downloading it now."
-            )
-            root_path = download.get_datasets_path_from_url(self.url)
-            path = self._get_downloaded_split_path(root_path, split)
-
         self.paths = self._get_database_paths(path, pattern)
         self.databases = [
             lmdb.open(
@@ -102,23 +82,6 @@ class _UMAAseLMDBDataset(Dataset):
         self.energy_key = energy_key
         self.forces_key = forces_key
         self.transforms = transforms
-
-    def _get_downloaded_split_path(self, root_path: str, split: str) -> str:
-        relative_path = self.get_split_relative_path(split)
-        candidates = (
-            osp.join(root_path, relative_path),
-            osp.join(root_path, "uma_datasets", relative_path),
-        )
-        for candidate in candidates:
-            if osp.exists(candidate):
-                return candidate
-        raise FileNotFoundError(
-            f"Cannot find UMA {self.dataset_subdir} {split} split under "
-            f"{root_path}. Expected {relative_path}."
-        )
-
-    def get_split_relative_path(self, split: str) -> str:
-        return osp.join(self.dataset_subdir, split)
 
     @staticmethod
     def _get_database_paths(path: str, pattern: str) -> list[str]:
@@ -210,20 +173,3 @@ class _UMAAseLMDBDataset(Dataset):
     def __del__(self):
         for database in getattr(self, "databases", []):
             database.close()
-
-
-class UMAOC20Dataset(_UMAAseLMDBDataset):
-    """Prepared OC20 S2EF data used by the UMA configuration."""
-
-    url = UMA_DATASET_URL
-    dataset_subdir = osp.join("oc20", "uma_aselmdb")
-
-
-class UMAOMat24Dataset(_UMAAseLMDBDataset):
-    """OMat24 rattled structures used by the UMA configuration."""
-
-    url = UMA_DATASET_URL
-    dataset_subdir = "omat24"
-
-    def get_split_relative_path(self, split: str) -> str:
-        return osp.join(self.dataset_subdir, split, "rattled-500")

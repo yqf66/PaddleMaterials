@@ -22,8 +22,7 @@ from pymatgen.core import Structure
 
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.custom_data_type import ConcatNumpyWarper
-from ppmat.datasets.uma_dataset import UMAOC20Dataset
-from ppmat.datasets.uma_dataset import UMAOMat24Dataset
+from ppmat.datasets.oc20_dataset import UMAOC20Dataset
 from ppmat.models import UMA
 from ppmat.models import FindPointsInSpheres
 
@@ -31,15 +30,11 @@ from ppmat.models import FindPointsInSpheres
 def test_uma_dataset_resolves_only_requested_split(tmp_path):
     extracted_root = tmp_path / "uma_datasets"
     oc20_train = extracted_root / "oc20" / "uma_aselmdb" / "train"
-    omat24_val = extracted_root / "omat24" / "val" / "rattled-500"
     oc20_train.mkdir(parents=True)
-    omat24_val.mkdir(parents=True)
 
     oc20_dataset = UMAOC20Dataset.__new__(UMAOC20Dataset)
-    omat24_dataset = UMAOMat24Dataset.__new__(UMAOMat24Dataset)
 
     assert oc20_dataset._get_downloaded_split_path(tmp_path, "train") == str(oc20_train)
-    assert omat24_dataset._get_downloaded_split_path(tmp_path, "val") == str(omat24_val)
 
 
 def test_uma_oc20_dataset_reads_one_split(tmp_path):
