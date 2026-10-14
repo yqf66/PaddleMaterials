@@ -18,6 +18,12 @@ from ppmat.models.common.e3nn.nn import Activation
 from ppmat.models.common.e3nn.nn import Extract
 
 
+def swish(x: paddle.Tensor) -> paddle.Tensor:
+    """Apply unscaled Swish using its explicit, unfused expression."""
+
+    return x * paddle.nn.functional.sigmoid(x)
+
+
 class ScaledSiLU(paddle.nn.Layer):
     def __init__(self):
         super().__init__()
