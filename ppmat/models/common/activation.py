@@ -101,7 +101,8 @@ class NormActivation(paddle.nn.Layer):
         """
         :param irreps_in: input representations
         :param act_scalars: scalar activation function
-        :param act_vectors: vector activation function (for the norm of higher order features)
+        :param act_vectors: vector activation function for the norm of higher
+            order features
         """
         super(NormActivation, self).__init__()
         self.irreps_in = o3.Irreps(irreps_in)

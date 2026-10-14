@@ -68,11 +68,9 @@ Model:
     use_max_cell: true
     max_cell_size: 20
     equivariant_frame: true
-    normalize: true
     using_ff: true
     model_sharing: false
     num_infgcn_layer: 3
-    use_detach: false
     num_spherical_RNO: 4
     scalar_mask: true
     mask_cutoff: 3.0

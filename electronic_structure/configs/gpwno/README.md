@@ -74,7 +74,7 @@ $$
 
 **QM9_EC.** QM9 contains 133,884 small molecules composed of C, H, O, N, and F. Its electron-density benchmark contains 123,835 training samples, 50 validation samples, and 10,000 test samples. The PaddleMaterials reader uses the metadata and split files together with the compressed charge-density files.
 
-**MP_EC.** The Materials Project benchmark contains electron densities for inorganic crystals. After invalid files are filtered, the structures are grouped into seven crystal systems. This PR provides the cubic-system configuration. [Download densities](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MP_ES/mp_es.tar), [atom dictionary](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MP_ES/crystal.json), and [split file](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MP_ES/crystal_data_split.json).
+**MP_EC.** The Materials Project benchmark contains electron densities for inorganic crystals. After invalid files are filtered, the structures are grouped into seven crystal systems. The provided configuration targets the cubic system. [Download densities](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MP_ES/mp_es.tar), [atom dictionary](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MP_ES/crystal.json), and [split file](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MP_ES/crystal_data_split.json).
 
 ---
 
@@ -105,7 +105,7 @@ $$
             <td nowrap="nowrap">Validation only (10 epochs)</td>
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">15hour33min</td>
-            <td nowrap="nowrap"><a href="../../../electronic_structure/configs/gpwno/gpwno_md17_benzene.yaml">gpwno_md17_benzene</a></td>
+            <td nowrap="nowrap"><a href="gpwno_md17_benzene.yaml">gpwno_md17_benzene</a></td>
             <td nowrap="nowrap">TBD</td>
         </tr>
         <tr>
@@ -117,7 +117,7 @@ $$
             <td nowrap="nowrap">Validation and test</td>
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">52hour18min</td>
-            <td nowrap="nowrap"><a href="../../../electronic_structure/configs/gpwno/gpwno_md17_ethane.yaml">gpwno_md17_ethane</a></td>
+            <td nowrap="nowrap"><a href="gpwno_md17_ethane.yaml">gpwno_md17_ethane</a></td>
             <td nowrap="nowrap">TBD</td>
         </tr>
         <tr>
@@ -129,7 +129,7 @@ $$
             <td nowrap="nowrap">Validation and test (2 epochs)</td>
             <td nowrap="nowrap">3</td>
             <td nowrap="nowrap">36hour33min</td>
-            <td nowrap="nowrap"><a href="../../../electronic_structure/configs/gpwno/gpwno_qm9.yaml">gpwno_qm9</a></td>
+            <td nowrap="nowrap"><a href="gpwno_qm9.yaml">gpwno_qm9</a></td>
             <td nowrap="nowrap">TBD</td>
         </tr>
         <tr>
@@ -141,7 +141,7 @@ $$
             <td nowrap="nowrap">Validation and test</td>
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">37hour46min</td>
-            <td nowrap="nowrap"><a href="../../../electronic_structure/configs/gpwno/gpwno_mp.yaml">gpwno_mp</a></td>
+            <td nowrap="nowrap"><a href="gpwno_mp.yaml">gpwno_mp</a></td>
             <td nowrap="nowrap">TBD</td>
         </tr>
     </tbody>

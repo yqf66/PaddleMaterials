@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+
 import numpy as np
 import paddle
 
@@ -20,16 +22,15 @@ from ppmat.datasets.graph_utils.infgcn_graph_utils import radius
 from ppmat.datasets.graph_utils.infgcn_graph_utils import radius_graph
 from ppmat.models.common.activation import NormActivation
 from ppmat.models.common.activation import ScalarActivation
+from ppmat.models.common.e3nn import o3
+from ppmat.models.common.e3nn.math import soft_one_hot_linspace
+from ppmat.models.common.e3nn.nn import FullyConnectedNet
+from ppmat.models.common.orbital import GaussianOrbital
 from ppmat.utils.crystal import pbc_vec
 from ppmat.utils.scatter import scatter
 
-from ..common.e3nn import o3
-from ..common.e3nn.math import soft_one_hot_linspace
-from ..common.e3nn.nn import FullyConnectedNet
-from ..common.orbital import GaussianOrbital
 
-
-class GCNLayer(paddle.nn.Module):
+class GCNLayer(paddle.nn.Layer):
     def __init__(
         self,
         irreps_in,
@@ -42,8 +43,6 @@ class GCNLayer(paddle.nn.Module):
         use_sc=True,
         irrep_normalization="component",
         path_normalization="element",
-        *args,
-        **kwargs,
     ):
         """
         A single InfGCN layer for Tensor Product-based message passing.
@@ -57,9 +56,9 @@ class GCNLayer(paddle.nn.Module):
         .. math::
             z_u=x_u\\otimes \\sum_v w_{uv}y_v=w_u (x_u\\otimes y)
 
-        Here, uvw are radial (channel) indices of the first input, second input, and output, respectively.
-        Notice that in our model, the second input is always the spherical harmonics of the edge vector,
-        so the index v can be safely ignored.
+        Here, uvw are radial (channel) indices of the first input, second input,
+        and output, respectively. The second input is always the spherical
+        harmonics of the edge vector, so the index v can be safely ignored.
 
         :param irreps_in: irreducible representations of input node features
         :param irreps_out: irreducible representations of output node features
@@ -69,10 +68,12 @@ class GCNLayer(paddle.nn.Module):
         :param radial_hidden_size: hidden size of the radial network
         :param is_fc: whether to use fully connected tensor product
         :param use_sc: whether to use self-connection
-        :param irrep_normalization: representation normalization passed to the `o3.FullyConnectedTensorProduct`
-        :param path_normalization: path normalization passed to the `o3.FullyConnectedTensorProduct`
+        :param irrep_normalization: representation normalization passed to
+            `o3.FullyConnectedTensorProduct`
+        :param path_normalization: path normalization passed to
+            `o3.FullyConnectedTensorProduct`
         """
-        super(GCNLayer, self).__init__()
+        super().__init__()
         self.irreps_in = o3.Irreps(irreps_in)
         self.irreps_out = o3.Irreps(irreps_out)
         self.irreps_edge = o3.Irreps(irreps_edge)
@@ -119,88 +120,39 @@ class GCNLayer(paddle.nn.Module):
         if self.use_sc:
             self.sc = o3.Linear(self.irreps_in, self.irreps_out)
 
-    def forward(self, edge_index, node_feat, edge_feat, edge_embed, dim_size=None):
+    def forward(
+        self, edge_index, node_feat, edge_feat, edge_embed, dim_size=None, reduce="sum"
+    ):
         src, dst = edge_index
         weight = self.fc(edge_embed)
         out = self.tp(node_feat[src], edge_feat, weight=weight)
-        out = scatter(out, dst, dim=0, dim_size=dim_size, reduce="sum")
-        if self.use_sc:
-            out = out + self.sc(node_feat)
-        return out
-
-    def forward_mean(self, edge_index, node_feat, edge_feat, edge_embed, dim_size=None):
-        src, dst = edge_index
-        weight = self.fc(edge_embed)
-        out = self.tp(node_feat[src], edge_feat, weight=weight)
-        out = scatter(out, dst, dim=0, dim_size=dim_size, reduce="mean")
+        out = scatter(out, dst, dim=0, dim_size=dim_size, reduce=reduce)
         if self.use_sc:
             out = out + self.sc(node_feat)
         return out
 
 
-class SpectralConv3d(paddle.nn.Module):
+class SpectralConv3d(paddle.nn.Layer):
+    """Apply a learned spectral transform to a three-dimensional real field."""
+
     def __init__(self, in_channels, out_channels, modes1, modes2, modes3):
-        super(SpectralConv3d, self).__init__()
-        """
-        3D Fourier layer. It does FFT, linear transform, and Inverse FFT.
-        """
+        super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.modes1 = modes1
         self.modes2 = modes2
         self.modes3 = modes3
         self.scale = 1 / (in_channels * out_channels)
-        self.weights1 = paddle.nn.Parameter(
-            self.scale
-            * paddle.rand(
-                in_channels,
-                out_channels,
-                self.modes1,
-                self.modes2,
-                self.modes3,
-                dtype=paddle.complex64,
-            )
-        )
-        self.weights2 = paddle.nn.Parameter(
-            self.scale
-            * paddle.rand(
-                in_channels,
-                out_channels,
-                self.modes1,
-                self.modes2,
-                self.modes3,
-                dtype=paddle.complex64,
-            )
-        )
-        self.weights3 = paddle.nn.Parameter(
-            self.scale
-            * paddle.rand(
-                in_channels,
-                out_channels,
-                self.modes1,
-                self.modes2,
-                self.modes3,
-                dtype=paddle.complex64,
-            )
-        )
-        self.weights4 = paddle.nn.Parameter(
-            self.scale
-            * paddle.rand(
-                in_channels,
-                out_channels,
-                self.modes1,
-                self.modes2,
-                self.modes3,
-                dtype=paddle.complex64,
-            )
-        )
+        weight_shape = [in_channels, out_channels, modes1, modes2, modes3]
+        for name in ("weights1", "weights2", "weights3", "weights4"):
+            weight = self.scale * paddle.rand(weight_shape, dtype=paddle.complex64)
+            self.add_parameter(name, paddle.nn.Parameter(weight))
 
     def compl_mul3d(self, input, weights):
         return paddle.einsum("bixyz,ioxyz->boxyz", input, weights)
 
     def forward(self, x):
         batchsize = x.shape[0]
-        # Pass explicit dimensions for the 3D real FFT.
         x_ft = paddle.fft.rfftn(x, dim=[-3, -2, -1], norm="ortho")
         out_ft = paddle.zeros(
             [
@@ -235,12 +187,11 @@ class SpectralConv3d(paddle.nn.Module):
         return x
 
 
-class SpectralConv3d_FFNO(paddle.nn.Module):
+class SpectralConv3d_FFNO(paddle.nn.Layer):
+    """Sum learned one-dimensional spectral transforms along the three axes."""
+
     def __init__(self, in_channels, out_channels, modes1, modes2, modes3):
-        super(SpectralConv3d_FFNO, self).__init__()
-        """
-        3D Fourier layer for FFNO-style factorized spectral convolution.
-        """
+        super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.modes_x = modes1
@@ -255,61 +206,50 @@ class SpectralConv3d_FFNO(paddle.nn.Module):
             self.fourier_weight.append(paddle.nn.Parameter(weight))
 
     def forward(self, x):
-        B, I, S1, S2, S3 = x.shape  # [batch, in_ch, x, y, z]
+        batch_size, channels, size_x, size_y, size_z = x.shape
 
         # Spectral convolution along the z axis.
-        x_ftz = paddle.fft.rfftn(
-            x,
-            dim=[
-                -1,
-            ],
-            norm="ortho",
-        )
-        out_ft = x_ftz.new_zeros(B, I, S1, S2, S3 // 2 + 1)
+        x_ftz = paddle.fft.rfftn(x, dim=[-1], norm="ortho")
+        out_ft = x_ftz.new_zeros(batch_size, channels, size_x, size_y, size_z // 2 + 1)
         out_ft[:, :, :, :, : self.modes_z] = paddle.einsum(
             "bixyz,ioz->boxyz",
             x_ftz[:, :, :, :, : self.modes_z],
             paddle.view_as_complex(self.fourier_weight[2]),
         )
-        xz = paddle.fft.irfft(out_ft, n=S3, dim=-1, norm="ortho")
+        xz = paddle.fft.irfft(out_ft, n=size_z, dim=-1, norm="ortho")
 
         # Spectral convolution along the y axis.
-        x_fty = paddle.fft.rfftn(
-            x,
-            dim=[
-                -2,
-            ],
-            norm="ortho",
-        )
-        out_ft = x_ftz.new_zeros(B, I, S1, S2 // 2 + 1, S3)
+        x_fty = paddle.fft.rfftn(x, dim=[-2], norm="ortho")
+        out_ft = x_ftz.new_zeros(batch_size, channels, size_x, size_y // 2 + 1, size_z)
         out_ft[:, :, :, : self.modes_y, :] = paddle.einsum(
             "bixyz,ioy->boxyz",
             x_fty[:, :, :, : self.modes_y, :],
             paddle.view_as_complex(self.fourier_weight[1]),
         )
-        xy = paddle.fft.irfft(out_ft, n=S2, dim=-2, norm="ortho")
+        xy = paddle.fft.irfft(out_ft, n=size_y, dim=-2, norm="ortho")
 
         # Spectral convolution along the x axis.
-        x_ftx = paddle.fft.rfftn(
-            x,
-            dim=[
-                -3,
-            ],
-            norm="ortho",
-        )
-        out_ft = x_ftz.new_zeros(B, I, S1 // 2 + 1, S2, S3)
+        x_ftx = paddle.fft.rfftn(x, dim=[-3], norm="ortho")
+        out_ft = x_ftz.new_zeros(batch_size, channels, size_x // 2 + 1, size_y, size_z)
         out_ft[:, :, : self.modes_x, :, :] = paddle.einsum(
             "bixyz,iox->boxyz",
             x_ftx[:, :, : self.modes_x, :, :],
             paddle.view_as_complex(self.fourier_weight[0]),
         )
-        xx = paddle.fft.irfft(out_ft, n=S1, dim=-3, norm="ortho")
+        xx = paddle.fft.irfft(out_ft, n=size_x, dim=-3, norm="ortho")
 
         x = xx + xy + xz
         return x
 
 
-class PWNO(paddle.nn.Module):
+class PWNO(paddle.nn.Layer):
+    """Refine probe features with spectral and point-wise convolutions.
+
+    Inputs are probe features with shape ``[batch, nx, ny, nz, channels]`` and
+    three normalized coordinates per probe. The output retains the spatial
+    dimensions and has ``width`` channels.
+    """
+
     def __init__(
         self,
         modes1,
@@ -321,19 +261,7 @@ class PWNO(paddle.nn.Module):
         num_layers=2,
         using_ff=False,
     ):
-        super(PWNO, self).__init__()
-        """
-        The overall network. It contains 4 layers of the Fourier layer.
-        1. Lift the input to the desire channel dimension by self.fc0 .
-        2. 4 layers of the integral operators u' = (W + K)(u).
-            W defined by self.w; K defined by self.conv .
-        3. Project from the channel space to the output space by self.fc1 and self.fc2 .
-
-        input: the solution of the first 10 timesteps + 3 locations (u(1, x, y), ..., u(10, x, y),  x, y, t). It's a constant function in time, except for the last index.
-        input shape: (batchsize, x=64, y=64, t=40, c=13)
-        output: the solution of the next 40 timesteps
-        output shape: (batchsize, x=64, y=64, t=40, c=1)
-        """
+        super().__init__()
         self.modes1 = modes1
         self.modes2 = modes2
         self.modes3 = modes3
@@ -343,7 +271,7 @@ class PWNO(paddle.nn.Module):
         self.fc0 = paddle.compat.nn.Linear(self.num_fourier_time + 3, self.width)
         self.num_layers = num_layers
         if using_ff:
-            self.conv = paddle.nn.ModuleList(
+            self.conv = paddle.nn.LayerList(
                 [
                     SpectralConv3d_FFNO(
                         self.width, self.width, self.modes1, self.modes2, self.modes3
@@ -352,7 +280,7 @@ class PWNO(paddle.nn.Module):
                 ]
             )
         else:
-            self.conv = paddle.nn.ModuleList(
+            self.conv = paddle.nn.LayerList(
                 [
                     SpectralConv3d(
                         self.width, self.width, self.modes1, self.modes2, self.modes3
@@ -360,15 +288,9 @@ class PWNO(paddle.nn.Module):
                     for _ in range(self.num_layers)
                 ]
             )
-        self.w = paddle.nn.ModuleList(
+        self.w = paddle.nn.LayerList(
             [
                 paddle.nn.Conv3d(self.width, self.width, 1)
-                for _ in range(self.num_layers)
-            ]
-        )
-        self.bn = paddle.nn.ModuleList(
-            [
-                paddle.nn.BatchNorm3D(num_features=self.width)
                 for _ in range(self.num_layers)
             ]
         )
@@ -419,15 +341,11 @@ class GPWNO(paddle.nn.Layer):
         use_max_cell=True,
         max_cell_size=22,
         equivariant_frame=True,
-        probe_and_node=False,
-        product=False,
-        normalize=True,
         model_sharing=True,
         num_infgcn_layer=3,
         input_infgcn=False,
         using_ff=True,
         scalar_mask=True,
-        use_detach=True,
         mask_cutoff=3.0,
         scalar_inv=False,
         num_spherical_RNO=None,
@@ -439,29 +357,30 @@ class GPWNO(paddle.nn.Layer):
         vocab=None,
         target_name="density",
         loss_eps=1e-8,
-        *args,
         **kwargs,
     ):
         """
         Implement the GPWNO model for electron density estimation
         :param n_atom_type: number of atom types
         :param num_radial: number of radial basis
-        :param num_spherical: maximum number of spherical harmonics for each radial basis,
-                number of spherical basis will be (num_spherical + 1)^2
+        :param num_spherical: maximum spherical harmonic degree for each radial
+            basis; the number of spherical basis functions is
+            (num_spherical + 1)^2
         :param radial_embed_size: embedding size of the edge length
         :param radial_hidden_size: hidden size of the radial network
         :param num_radial_layer: number of hidden layers in the radial network
         :param num_gcn_layer: number of GPWNO layers
         :param cutoff: cutoff distance for building the molecular graph
         :param grid_cutoff: cutoff distance for building the grid-atom graph
-        :param is_fc: whether the GPWNO layer should use fully connected tensor product
+        :param is_fc: whether the GPWNO layer should use a fully connected
+            tensor product
         :param gauss_start: start coefficient of the Gaussian radial basis
         :param gauss_end: end coefficient of the Gaussian radial basis
-        :param activation: activation type for the GPWNO layer, can be ['scalar', 'norm']
+        :param activation: activation type, either 'scalar' or 'norm'
         :param residual: whether to use the residue prediction layer
         :param pbc: whether the data satisfy the periodic boundary condition
         """
-        super(GPWNO, self).__init__(*args, **kwargs)
+        super().__init__()
         self.n_atom_type = n_atom_type
         self.vocab = vocab
         self.target_name = target_name
@@ -486,13 +405,10 @@ class GPWNO(paddle.nn.Layer):
         self.use_max_cell = use_max_cell
         self.max_cell_size = max_cell_size
         self.equivariant_frame = equivariant_frame
-        self.probe_and_node = probe_and_node
-        self.normalize = normalize
         self.model_sharing = model_sharing
         self.num_infgcn_layer = num_infgcn_layer
         self.input_infgcn = input_infgcn
         self.scalar_mask = scalar_mask
-        self.use_detach = use_detach
         self.mask_cutoff = mask_cutoff
         self.scalar_inv = scalar_inv
         self.positive_output = positive_output
@@ -501,18 +417,17 @@ class GPWNO(paddle.nn.Layer):
         self.atom_info = atom_info
         self.fourier_mode = fourier_mode
         self.num_spherical_RNO = num_spherical_RNO
-        if model_sharing == True or num_spherical_RNO is None:
+        if model_sharing or num_spherical_RNO is None:
             self.num_spherical_RNO = num_spherical
-        self.product = product
         assert activation in ["scalar", "norm"]
         self.embedding = paddle.nn.Embedding(n_atom_type, num_radial)
         self.irreps_sh = o3.Irreps.spherical_harmonics(num_spherical, p=1)
         self.irreps_feat = (self.irreps_sh * num_radial).sort().irreps.simplify()
-        self.irreps_sh_RNO = o3.Irreps.spherical_harmonics(num_spherical_RNO, p=1)
+        self.irreps_sh_RNO = o3.Irreps.spherical_harmonics(self.num_spherical_RNO, p=1)
         self.irreps_feat_RNO = (
             (self.irreps_sh_RNO * num_radial).sort().irreps.simplify()
         )
-        self.gcns_RNO = paddle.nn.ModuleList(
+        self.gcns_RNO = paddle.nn.LayerList(
             [
                 GCNLayer(
                     f"{num_radial}x0e" if i == 0 else self.irreps_feat_RNO,
@@ -537,8 +452,8 @@ class GPWNO(paddle.nn.Layer):
         else:
             self.act = NormActivation(self.irreps_feat)
             self.act_RNO = NormActivation(self.irreps_feat_RNO)
-        if self.model_sharing == False:
-            self.infgcns = paddle.nn.ModuleList(
+        if not self.model_sharing:
+            self.infgcns = paddle.nn.LayerList(
                 [
                     GCNLayer(
                         f"{num_radial}x0e" if i == 0 else self.irreps_feat,
@@ -612,13 +527,11 @@ class GPWNO(paddle.nn.Layer):
             gauss_start, gauss_end, num_radial, num_spherical
         )
         if self.atomic_gauss_dist and atom_info is not None:
-            import json
-
             with open(atom_info) as f:
                 atom_info = json.load(f)
-            atom_radius = [info["radius"] for info in atom_info]
-            self.atom_radius = [radius for idx, radius in enumerate(atom_radius)]
-            self.atom_radius = paddle.FloatTensor(self.atom_radius)
+            self.atom_radius = paddle.to_tensor(
+                [info["radius"] for info in atom_info], dtype="float32"
+            )
 
     def _forward(self, data):
         grid = data["grid_coord"]
@@ -721,7 +634,6 @@ class GPWNO(paddle.nn.Layer):
         return loss, mae
 
     def _forward_density(self, atom_types, atom_coord, grid, batch_idx, info):
-
         device = atom_coord.place
 
         cell = None
@@ -740,7 +652,7 @@ class GPWNO(paddle.nn.Layer):
         if self.use_max_cell and self.equivariant_frame:
             atom_center = scatter(atom_coord, batch_idx, dim=0, reduce="mean")
             atom_coord = atom_coord - atom_center[batch_idx]
-            grid -= atom_center.unsqueeze(1)
+            grid = grid - atom_center.unsqueeze(1)
         edge_index = radius_graph(atom_coord, self.cutoff, batch_idx, loop=False)
         src, dst = edge_index
         edge_vec = atom_coord[src] - atom_coord[dst]
@@ -765,7 +677,7 @@ class GPWNO(paddle.nn.Layer):
             normalize=False,
             normalization="integral",
         )
-        if self.model_sharing == False:
+        if not self.model_sharing:
             infgcn_feat = feat
             for i, gcn in enumerate(self.infgcns):
                 infgcn_feat = gcn(
@@ -783,6 +695,7 @@ class GPWNO(paddle.nn.Layer):
             )
             if i != self.num_gcn_layer - 1:
                 feat = self.act_RNO(feat)
+        density_feat = feat if self.model_sharing else infgcn_feat
         bins_lin = paddle.linspace(0, 1, self.num_fourier).to(atom_coord.place)
         if self.pbc:
             half = len(bins_lin) // 2
@@ -838,9 +751,6 @@ class GPWNO(paddle.nn.Layer):
                 max_cell = max_cell.unsqueeze(0).repeat(grid.size(0), 1, 1)
             cell_inp = max_cell
         probe = paddle.einsum("ijkl,blm->bijkm", probe, cell_inp).detach()
-        probe_log = probe.cpu()
-        if self.use_max_cell and self.equivariant_frame:
-            probe_log += atom_center.reshape(-1, 1, 1, 1, 3).cpu()
         probe_flat = probe.reshape(-1, 3)
         probe_batch = paddle.arange(grid.size(0), device=grid.device).repeat_interleave(
             len(bins_lin) ** 3
@@ -905,12 +815,13 @@ class GPWNO(paddle.nn.Layer):
             basis="gaussian",
             cutoff=False,
         ).mul(self.radial_embed_size**0.5)
-        probe_feat = self.probe_gcn.forward_mean(
+        probe_feat = self.probe_gcn(
             (probe_src, probe_dst),
             feat,
             probe_edge_feat,
             probe_edge_embed,
             dim_size=probe_flat.size(0),
+            reduce="mean",
         )
         probe_feat = self.act_probe(probe_feat)
         probe_feat = probe_feat.reshape(
@@ -1007,36 +918,23 @@ class GPWNO(paddle.nn.Layer):
                 batch_idx
             ] - atom_coord.unsqueeze(-2)
             if self.pbc:
-                probe_vec, frac = pbc_vec(probe_vec, cell[batch_idx])
+                probe_vec, _ = pbc_vec(probe_vec, cell[batch_idx])
             density_res = paddle.zeros(grid.size(0), self.num_fourier**3, 1).to(
                 atom_coord.place
             )
             for b_idx in range(grid.size(0)):
-                if self.model_sharing == False:
-                    density_res[b_idx] = (
-                        (
-                            self.orbital(probe_vec[b_idx])
-                            * infgcn_feat[batch_idx == b_idx].unsqueeze(0)
-                        )
-                        .sum(dim=-1)
-                        .reshape(-1, 1)
+                density_res[b_idx] = (
+                    (
+                        self.orbital(probe_vec[b_idx])
+                        * density_feat[batch_idx == b_idx].unsqueeze(0)
                     )
-                else:
-                    density_res[b_idx] = (
-                        (
-                            self.orbital(probe_vec[b_idx])
-                            * feat[batch_idx == b_idx].unsqueeze(0)
-                        )
-                        .sum(dim=-1)
-                        .reshape(-1, 1)
-                    )
+                    .sum(dim=-1)
+                    .reshape(-1, 1)
+                )
             density_res = density_res.reshape(
                 grid.size(0), self.num_fourier, self.num_fourier, self.num_fourier, -1
             )
-            if self.model_sharing == True:
-                infgcn_feat = feat
-            if self.residual and self.input_infgcn:
-                res_feat = infgcn_feat
+            if self.residual:
                 probe_edge_feat_res = o3.spherical_harmonics(
                     list(range(self.num_spherical + 1)),
                     probe_edge / (probe_len[..., None] + 1e-08),
@@ -1045,7 +943,7 @@ class GPWNO(paddle.nn.Layer):
                 )
                 residue = self.residue(
                     (probe_src, probe_dst),
-                    res_feat,
+                    density_feat,
                     probe_edge_feat_res,
                     probe_edge_embed,
                     dim_size=probe_flat.size(0),
@@ -1078,8 +976,6 @@ class GPWNO(paddle.nn.Layer):
             .repeat_interleave(n_sample)
             .detach()
         )
-        probe_and_node = probe_flat
-        probe_and_node_batch = probe_batch
         if self.pbc:
             sample_dst, super_probe_and_node_src = radius(
                 super_probe_flat,
@@ -1091,10 +987,10 @@ class GPWNO(paddle.nn.Layer):
             probe_and_node_src = super_probe_idx_batch[super_probe_and_node_src]
         else:
             sample_dst, probe_and_node_src = radius(
-                probe_and_node,
+                probe_flat,
                 sample_flat,
                 self.grid_cutoff,
-                probe_and_node_batch,
+                probe_batch,
                 sample_batch,
             )
         avg_sample_degree = (
@@ -1131,13 +1027,13 @@ class GPWNO(paddle.nn.Layer):
             basis="gaussian",
             cutoff=False,
         ).mul(self.radial_embed_size**0.5)
-        probe_and_node_feat = probe_feat
-        scalar_field_gcn = self.scalar_field_gcn.forward_mean(
+        scalar_field_gcn = self.scalar_field_gcn(
             (probe_and_node_src, sample_dst),
-            probe_and_node_feat,
+            probe_feat,
             sample_edge_feat,
             sample_edge_embed,
             dim_size=sample_flat.size(0),
+            reduce="mean",
         )
         if self.residual:
             grid_flat = grid.view(-1, 3)
@@ -1163,32 +1059,23 @@ class GPWNO(paddle.nn.Layer):
                 basis="gaussian",
                 cutoff=False,
             ).mul(self.radial_embed_size**0.5)
-            res_feat = feat
-            if self.model_sharing == False:
-                res_feat = infgcn_feat
             residue = self.residue(
                 (node_src, grid_dst),
-                res_feat,
+                density_feat,
                 grid_edge_feat,
                 grid_edge_embed,
                 dim_size=grid_flat.size(0),
             )
-        else:
-            residue = 0.0
         sample_vec = grid[batch_idx] - atom_coord.unsqueeze(-2)
         if self.pbc:
-            sample_vec, frac = pbc_vec(sample_vec, cell[batch_idx])
+            sample_vec, _ = pbc_vec(sample_vec, cell[batch_idx])
         orbital = self.orbital(sample_vec)
-        if self.model_sharing == False:
-            density = (orbital * infgcn_feat.unsqueeze(1)).sum(dim=-1)
-        else:
-            density = (orbital * feat.unsqueeze(1)).sum(dim=-1)
+        density = (orbital * density_feat.unsqueeze(1)).sum(dim=-1)
         density = scatter(density, batch_idx, dim=0, reduce="sum")
         scalar_field = scalar_field_gcn.reshape([grid.shape[0], grid.shape[1]])
         if self.residual:
             density = density + residue.view(*density.size())
         if self.scalar_mask:
-            # Match the mask dtype and device with the scalar field.
             mask_float = mask.astype(paddle.float32).to(scalar_field.place)
             scalar_field = scalar_field * mask_float
 
