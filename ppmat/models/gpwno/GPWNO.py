@@ -45,7 +45,7 @@ class GCNLayer(paddle.nn.Layer):
         path_normalization="element",
     ):
         """
-        A single InfGCN layer for Tensor Product-based message passing.
+        Equivariant graph convolution for the Gaussian and plane-wave branches.
         If the tensor product is fully connected, we have (for every path)
 
         .. math::
@@ -342,8 +342,8 @@ class GPWNO(paddle.nn.Layer):
         max_cell_size=22,
         equivariant_frame=True,
         model_sharing=True,
-        num_infgcn_layer=3,
-        input_infgcn=False,
+        num_local_gcn_layers=None,
+        input_local_density=None,
         using_ff=True,
         scalar_mask=True,
         mask_cutoff=3.0,
@@ -379,8 +379,28 @@ class GPWNO(paddle.nn.Layer):
         :param activation: activation type, either 'scalar' or 'norm'
         :param residual: whether to use the residue prediction layer
         :param pbc: whether the data satisfy the periodic boundary condition
+        :param num_local_gcn_layers: number of layers in the separate Gaussian
+            coefficient network; defaults to 3
+        :param input_local_density: append the Gaussian density evaluated at
+            Fourier probes to the plane-wave input; defaults to False
+
+        The local Gaussian branch uses InfGCN-style equivariant message passing,
+        but does not instantiate the standalone InfGCN model. Legacy configuration
+        keys ``num_infgcn_layer`` and ``input_infgcn`` remain supported.
         """
         super().__init__()
+        legacy_layers = kwargs.pop("num_infgcn_layer", None)
+        if num_local_gcn_layers is None:
+            num_local_gcn_layers = 3 if legacy_layers is None else legacy_layers
+        elif legacy_layers is not None and legacy_layers != num_local_gcn_layers:
+            raise ValueError("Conflicting local GCN layer counts in the configuration.")
+        legacy_density = kwargs.pop("input_infgcn", None)
+        if input_local_density is None:
+            input_local_density = False if legacy_density is None else legacy_density
+        elif legacy_density is not None and legacy_density != input_local_density:
+            raise ValueError(
+                "Conflicting local density input flags in the configuration."
+            )
         self.n_atom_type = n_atom_type
         self.vocab = vocab
         self.target_name = target_name
@@ -406,8 +426,8 @@ class GPWNO(paddle.nn.Layer):
         self.max_cell_size = max_cell_size
         self.equivariant_frame = equivariant_frame
         self.model_sharing = model_sharing
-        self.num_infgcn_layer = num_infgcn_layer
-        self.input_infgcn = input_infgcn
+        self.num_local_gcn_layers = num_local_gcn_layers
+        self.input_local_density = input_local_density
         self.scalar_mask = scalar_mask
         self.mask_cutoff = mask_cutoff
         self.scalar_inv = scalar_inv
@@ -453,7 +473,7 @@ class GPWNO(paddle.nn.Layer):
             self.act = NormActivation(self.irreps_feat)
             self.act_RNO = NormActivation(self.irreps_feat_RNO)
         if not self.model_sharing:
-            self.infgcns = paddle.nn.LayerList(
+            self.local_gcns = paddle.nn.LayerList(
                 [
                     GCNLayer(
                         f"{num_radial}x0e" if i == 0 else self.irreps_feat,
@@ -465,7 +485,7 @@ class GPWNO(paddle.nn.Layer):
                         is_fc=is_fc,
                         **kwargs,
                     )
-                    for i in range(num_infgcn_layer)
+                    for i in range(self.num_local_gcn_layers)
                 ]
             )
         self.residue = None
@@ -497,7 +517,7 @@ class GPWNO(paddle.nn.Layer):
             self.num_fourier // 2 if self.fourier_mode == 0 else self.fourier_mode
         )
         self.width = width
-        if self.input_infgcn:
+        if self.input_local_density:
             self.num_fourier_time += 1
         if self.input_dist:
             self.num_fourier_time += 1
@@ -532,6 +552,26 @@ class GPWNO(paddle.nn.Layer):
             self.atom_radius = paddle.to_tensor(
                 [info["radius"] for info in atom_info], dtype="float32"
             )
+
+    def set_state_dict(self, state_dict, use_structured_name=True):
+        """Load older checkpoints whose Gaussian layers were named ``infgcns``."""
+        if use_structured_name:
+            renamed = {}
+            for name, value in state_dict.items():
+                target = (
+                    "local_gcns." + name[len("infgcns.") :]
+                    if name.startswith("infgcns.")
+                    else name
+                )
+                if target in renamed:
+                    raise ValueError(
+                        f"Duplicate checkpoint key after renaming: {target}"
+                    )
+                renamed[target] = value
+            state_dict = renamed
+        return super().set_state_dict(
+            state_dict, use_structured_name=use_structured_name
+        )
 
     def _forward(self, data):
         grid = data["grid_coord"]
@@ -678,24 +718,24 @@ class GPWNO(paddle.nn.Layer):
             normalization="integral",
         )
         if not self.model_sharing:
-            infgcn_feat = feat
-            for i, gcn in enumerate(self.infgcns):
-                infgcn_feat = gcn(
+            local_feat = feat
+            for i, gcn in enumerate(self.local_gcns):
+                local_feat = gcn(
                     edge_index,
-                    infgcn_feat,
+                    local_feat,
                     edge_feat,
                     edge_embed,
                     dim_size=atom_types.size(0),
                 )
-                if i != self.num_infgcn_layer - 1:
-                    infgcn_feat = self.act(infgcn_feat)
+                if i != self.num_local_gcn_layers - 1:
+                    local_feat = self.act(local_feat)
         for i, gcn in enumerate(self.gcns_RNO):
             feat = gcn(
                 edge_index, feat, edge_feat_RNO, edge_embed, dim_size=atom_types.size(0)
             )
             if i != self.num_gcn_layer - 1:
                 feat = self.act_RNO(feat)
-        density_feat = feat if self.model_sharing else infgcn_feat
+        density_feat = feat if self.model_sharing else local_feat
         bins_lin = paddle.linspace(0, 1, self.num_fourier).to(atom_coord.place)
         if self.pbc:
             half = len(bins_lin) // 2
@@ -913,24 +953,18 @@ class GPWNO(paddle.nn.Layer):
                         dim=-2,
                     )
                 minimal_dist_probe[b_idx] = paddle.compat.min(dist_min, dim=-1)[0]
-        if self.input_infgcn:
+        if self.input_local_density:
             probe_vec = probe.reshape(grid.size(0), -1, 3)[
                 batch_idx
             ] - atom_coord.unsqueeze(-2)
             if self.pbc:
                 probe_vec, _ = pbc_vec(probe_vec, cell[batch_idx])
-            density_res = paddle.zeros(grid.size(0), self.num_fourier**3, 1).to(
-                atom_coord.place
+            atom_density = (self.orbital(probe_vec) * density_feat.unsqueeze(1)).sum(
+                dim=-1
             )
-            for b_idx in range(grid.size(0)):
-                density_res[b_idx] = (
-                    (
-                        self.orbital(probe_vec[b_idx])
-                        * density_feat[batch_idx == b_idx].unsqueeze(0)
-                    )
-                    .sum(dim=-1)
-                    .reshape(-1, 1)
-                )
+            density_res = scatter(
+                atom_density, batch_idx, dim=0, dim_size=n_graph, reduce="sum"
+            )
             density_res = density_res.reshape(
                 grid.size(0), self.num_fourier, self.num_fourier, self.num_fourier, -1
             )

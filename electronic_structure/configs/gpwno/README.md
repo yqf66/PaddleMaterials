@@ -56,6 +56,14 @@ $$
 
 The Fourier module is controlled mainly by `num_fourier`, `num_fourier_time`, `width`, `fourier_mode`, `padding`, and `using_ff`.
 
+The local Gaussian branch uses InfGCN-style equivariant message passing and
+Gaussian orbitals, but is implemented inside GPWNO rather than by instantiating
+the standalone `InfGCN` model. `num_local_gcn_layers` controls its depth when
+`model_sharing=false`; `input_local_density` optionally appends its predicted
+density at Fourier probes to the plane-wave input. Existing configurations using
+`num_infgcn_layer` / `input_infgcn` and checkpoints using `infgcns.*` keys remain
+loadable through compatibility aliases.
+
 #### 4) Training objective and metric
 
 The model is trained with point-wise density regression on sampled grid points. The commonly reported metric is Normalized Mean Absolute Error:

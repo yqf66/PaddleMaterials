@@ -71,7 +71,7 @@ Model:
     equivariant_frame: true
     using_ff: true
     model_sharing: false
-    num_infgcn_layer: 3
+    num_local_gcn_layers: 3
     num_spherical_RNO: 4
     scalar_mask: true
     mask_cutoff: 3.0

@@ -29,7 +29,7 @@ def build_small_model(**overrides):
         "num_fourier": 4,
         "num_fourier_time": 2,
         "num_gcn_layer": 1,
-        "num_infgcn_layer": 1,
+        "num_local_gcn_layers": 1,
         "width": 2,
         "padding": 0,
         "max_cell_size": 4,
@@ -87,3 +87,81 @@ def test_centered_prediction_preserves_inputs_and_translation(using_ff, activati
     assert np.isfinite(density.numpy()).all()
     np.testing.assert_allclose(density.numpy(), repeated.numpy(), atol=1e-6)
     np.testing.assert_allclose(density.numpy(), translated.numpy(), atol=1e-5)
+
+
+def test_legacy_local_branch_configuration_and_weights():
+    model = build_small_model(model_sharing=False)
+    restored = build_small_model(
+        model_sharing=False,
+        num_local_gcn_layers=None,
+        num_infgcn_layer=1,
+        input_infgcn=False,
+    )
+    assert restored.num_local_gcn_layers == 1
+    assert not restored.input_local_density
+    legacy_state = {
+        name.replace("local_gcns.", "infgcns.", 1): tensor.clone()
+        for name, tensor in model.state_dict().items()
+    }
+    assert any(name.startswith("infgcns.") for name in legacy_state)
+    missing, unexpected = restored.set_state_dict(legacy_state)
+    assert not missing
+    assert not unexpected
+    for name, tensor in model.state_dict().items():
+        np.testing.assert_array_equal(
+            tensor.numpy(), restored.state_dict()[name].numpy()
+        )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"num_local_gcn_layers": 1, "num_infgcn_layer": 2},
+        {"input_local_density": False, "input_infgcn": True},
+    ],
+)
+def test_conflicting_legacy_local_branch_options(options):
+    with pytest.raises(ValueError, match="Conflicting local"):
+        build_small_model(**options)
+
+
+@pytest.mark.parametrize("model_sharing", [False, True])
+@pytest.mark.parametrize("periodic", [False, True])
+def test_local_density_input_matches_independent_graphs(model_sharing, periodic):
+    model = build_small_model(
+        input_local_density=True,
+        model_sharing=model_sharing,
+        pbc=periodic,
+        use_max_cell=not periodic,
+        equivariant_frame=False,
+    )
+    model.eval()
+    atom_types = paddle.to_tensor([0, 1, 2, 0], dtype="int64")
+    atoms = paddle.to_tensor(
+        [[0.2, 0.3, 0.4], [1.0, 0.3, 0.4], [0.3, 0.5, 0.4], [0.3, 1.3, 0.4]],
+        dtype="float32",
+    )
+    grid = paddle.to_tensor(
+        [[[0.5, 0.5, 0.5], [1.2, 0.8, 0.6]], [[0.6, 0.5, 0.8], [0.8, 1.1, 0.7]]],
+        dtype="float32",
+    )
+    batch = paddle.to_tensor([0, 0, 1, 1], dtype="int64")
+    cells = paddle.eye(3).unsqueeze(0).tile([2, 1, 1]) * 3
+    info = {"cell": cells} if periodic else None
+    with paddle.no_grad():
+        prediction, _ = model._forward_density(atom_types, atoms, grid, batch, info)
+        separate = []
+        for index in range(2):
+            selected = batch == index
+            value, _ = model._forward_density(
+                atom_types[selected],
+                atoms[selected],
+                grid[index : index + 1],
+                paddle.zeros([2], dtype="int64"),
+                {"cell": cells[index : index + 1]} if periodic else None,
+            )
+            separate.append(value)
+    assert bool(paddle.isfinite(prediction).all())
+    np.testing.assert_allclose(
+        prediction.numpy(), paddle.concat(separate).numpy(), rtol=1e-5, atol=1e-5
+    )
