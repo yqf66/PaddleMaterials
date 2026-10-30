@@ -30,6 +30,8 @@ from paddle.io import DataLoader
 from paddle.io import DistributedBatchSampler  # noqa
 
 from ppmat.datasets import collate_fn
+from ppmat.datasets.ase_lmdb_dataset import OMat24Dataset
+from ppmat.datasets.ase_lmdb_dataset import UMAOC20Dataset
 from ppmat.datasets.density_dataset import DensityDataset
 from ppmat.datasets.density_dataset import MD17DensityDataset
 from ppmat.datasets.density_dataset import MPCubicDensityDataset
@@ -49,9 +51,7 @@ from ppmat.datasets.mptrj_dataset import MPTrjDataset
 from ppmat.datasets.msd_nmr_dataset import MSDnmrDataset
 from ppmat.datasets.msd_nmr_dataset import MSDnmrinfos
 from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
-from ppmat.datasets.oc20_dataset import UMAOC20Dataset
 from ppmat.datasets.oc20_s2ef_dataset import OC20S2EFDataset  # noqa
-from ppmat.datasets.omat24_dataset import OMat24Dataset
 from ppmat.datasets.omol25_dataset import OMol25Dataset
 from ppmat.datasets.qm9_dataset import QM9Dataset  # noqa
 from ppmat.datasets.sfin_dataset import SFINDataset

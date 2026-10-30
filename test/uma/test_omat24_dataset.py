@@ -15,7 +15,7 @@
 import pytest
 
 from ppmat.datasets.ase_lmdb_dataset import ASELMDBDataset
-from ppmat.datasets.omat24_dataset import OMat24Dataset
+from ppmat.datasets.ase_lmdb_dataset import OMat24Dataset
 from ppmat.utils import download
 
 

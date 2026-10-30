@@ -28,6 +28,7 @@ from paddle.io import Dataset
 from ppmat.datasets.build_structure import BuildStructure
 from ppmat.datasets.custom_data_type import ConcatNumpyWarper
 from ppmat.models import build_graph_converter
+from ppmat.utils import download
 
 
 class ASELMDBDataset(Dataset):
@@ -173,3 +174,50 @@ class ASELMDBDataset(Dataset):
     def __del__(self):
         for database in getattr(self, "databases", []):
             database.close()
+
+
+class OMat24Dataset(ASELMDBDataset):
+    """OMat24 rattled-500 structures in the original ASE-LMDB layout.
+
+    Only train and val archives are provided for this subset. A local path
+    points directly to an ASE-LMDB file or a directory containing such files.
+    """
+
+    def __init__(self, build_graph_cfg, split, path=None, **kwargs):
+        if split not in {"train", "val"}:
+            raise ValueError("OMat24 rattled-500 supports only train and val splits.")
+        if path is not None and not osp.exists(path):
+            raise FileNotFoundError(path)
+        if path is None:
+            url = (
+                "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/OMat24/"
+                f"{split}/rattled-500.tar.gz"
+            )
+            cache_dir = osp.join(download.DATASETS_HOME, "OMat24", split)
+            path = download.get_path_from_url(url, cache_dir)
+        super().__init__(build_graph_cfg=build_graph_cfg, path=path, **kwargs)
+
+
+class UMAOC20Dataset(ASELMDBDataset):
+    """Prepared OC20 S2EF data used by the UMA configuration."""
+
+    url = (
+        "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/UMA/uma_datasets.zip"
+    )
+    dataset_subdir = osp.join("oc20", "uma_aselmdb")
+
+    def __init__(self, build_graph_cfg, split, path=None, **kwargs):
+        if split not in {"train", "val", "test"}:
+            raise ValueError(f"Unsupported split: {split}.")
+        if path is None or not osp.exists(path):
+            root = download.get_datasets_path_from_url(self.url)
+            path = self._get_downloaded_split_path(root, split)
+        super().__init__(build_graph_cfg=build_graph_cfg, path=path, **kwargs)
+
+    def _get_downloaded_split_path(self, root_path, split):
+        relative_path = osp.join(self.dataset_subdir, split)
+        for root in (root_path, osp.join(root_path, "uma_datasets")):
+            path = osp.join(root, relative_path)
+            if osp.exists(path):
+                return path
+        raise FileNotFoundError(f"Cannot find OC20 {split} under {root_path}.")
