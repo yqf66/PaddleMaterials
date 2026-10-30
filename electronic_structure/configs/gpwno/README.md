@@ -25,6 +25,13 @@ The main components are:
 - Plane-wave neural operator refinement
 - Optional periodic-boundary support for crystalline systems
 
+With `pbc=true`, GPWNO restores the closed-cell boundary atom images used by
+the original MP training reader: atoms on lower cell faces are copied to the
+corresponding upper faces. This happens inside GPWNO for both training and
+prediction, so shared field readers and other models are unchanged. Images
+already present in the input are not added again. This is boundary completion,
+not a full 27-cell supercell expansion.
+
 ### Method
 
 #### 1) Gaussian basis expansion
@@ -114,7 +121,7 @@ $$
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">15hour33min</td>
             <td nowrap="nowrap"><a href="gpwno_md17_benzene.yaml">gpwno_md17_benzene</a></td>
-            <td nowrap="nowrap">TBD</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_benzene.zip">Checkpoint</a> | -</td>
         </tr>
         <tr>
             <td nowrap="nowrap">gpwno_md17_ethane</td>
@@ -126,7 +133,7 @@ $$
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">52hour18min</td>
             <td nowrap="nowrap"><a href="gpwno_md17_ethane.yaml">gpwno_md17_ethane</a></td>
-            <td nowrap="nowrap">TBD</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_ethane.zip">Checkpoint</a> | -</td>
         </tr>
         <tr>
             <td nowrap="nowrap">gpwno_qm9</td>
@@ -138,7 +145,7 @@ $$
             <td nowrap="nowrap">3</td>
             <td nowrap="nowrap">36hour33min</td>
             <td nowrap="nowrap"><a href="gpwno_qm9.yaml">gpwno_qm9</a></td>
-            <td nowrap="nowrap">TBD</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_qm9.zip">Checkpoint</a> | -</td>
         </tr>
         <tr>
             <td nowrap="nowrap">gpwno_mp</td>
@@ -150,10 +157,16 @@ $$
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">37hour46min</td>
             <td nowrap="nowrap"><a href="gpwno_mp.yaml">gpwno_mp</a></td>
-            <td nowrap="nowrap">TBD</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_mp.zip">Checkpoint</a> | -</td>
         </tr>
     </tbody>
 </table>
+
+Each checkpoint link downloads a model package containing a matching YAML and
+`checkpoints/best.pdparams`. The packages contain migrated training checkpoints;
+the historical results above are not a new evaluation of these packages.
+Loading and sampled-grid inference have been checked with the current code,
+but these checks do not establish full-grid test accuracy.
 
 ---
 
@@ -193,6 +206,20 @@ python electronic_structure/train.py -c electronic_structure/configs/gpwno/gpwno
 
 ### Prediction
 
+Use a model name from the results table to download its configuration and weights
+automatically:
+
+```bash
+python electronic_structure/predict.py \
+  --model_name gpwno_md17_ethane \
+  --weights_name best.pdparams \
+  --input_path path/to/molecule.mol \
+  --input_format mol \
+  --output_path ./results
+```
+
+For a custom checkpoint, provide its local configuration and weight paths:
+
 ```bash
 python electronic_structure/predict.py \
   --config_path electronic_structure/configs/gpwno/gpwno_md17_ethane.yaml \
@@ -205,6 +232,18 @@ python electronic_structure/predict.py \
 The unified `FieldPredictor` also accepts `xyz`, `cif`, `cube`, `chgcar`, and
 `json` inputs. Use `--grid_batch_size` to limit the number of field points in
 each inference pass when needed.
+
+Registered packages can also be loaded directly through the Python API:
+
+```python
+from ppmat.predictor import FieldPredictor
+
+predictor = FieldPredictor(
+    model_name="gpwno_md17_ethane",
+    weights_name="best.pdparams",
+    device="cpu",
+)
+```
 
 ---
 

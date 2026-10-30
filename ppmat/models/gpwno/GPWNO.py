@@ -378,7 +378,8 @@ class GPWNO(paddle.nn.Layer):
         :param gauss_end: end coefficient of the Gaussian radial basis
         :param activation: activation type, either 'scalar' or 'norm'
         :param residual: whether to use the residue prediction layer
-        :param pbc: whether the data satisfy the periodic boundary condition
+        :param pbc: whether the data satisfy the periodic boundary condition;
+            restore the boundary atom images used by the original MP reader
         :param num_local_gcn_layers: number of layers in the separate Gaussian
             coefficient network; defaults to 3
         :param input_local_density: append the Gaussian density evaluated at
@@ -673,6 +674,70 @@ class GPWNO(paddle.nn.Layer):
             )
         return loss, mae
 
+    @staticmethod
+    def _expand_boundary_atoms(atom_types, atom_coord, batch_idx, cell):
+        """Restore the closed-cell boundary images used to train MP weights.
+
+        The legacy reader copied atoms on lower cell faces to the corresponding
+        upper faces, not to a full 27-cell supercell. Shared field readers now
+        return only the original atoms. Keep this compatibility step local to
+        GPWNO and skip images already present in the input. NumPy selects the
+        discrete image topology; tensor gathers retain coordinate/cell gradients.
+        """
+        fractional = paddle.bmm(
+            atom_coord.unsqueeze(1), paddle.linalg.inv(cell)[batch_idx]
+        ).squeeze(1)
+        fractional_np = fractional.detach().numpy()
+        types_np = atom_types.numpy()
+        batches_np = batch_idx.numpy()
+        directions = np.asarray(
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [0, 1, 1],
+                [1, 0, 1],
+                [1, 1, 0],
+                [1, 1, 1],
+            ],
+            dtype=np.int64,
+        )
+        tolerance = 1e-6
+
+        existing = {}
+        for index, position in enumerate(fractional_np):
+            key = (int(batches_np[index]), int(types_np[index]))
+            existing.setdefault(key, []).append(position)
+        sources, shifts = [], []
+        for index, position in enumerate(fractional_np):
+            key = (int(batches_np[index]), int(types_np[index]))
+            for direction in directions:
+                shifted = position + direction
+                if direction.any():
+                    if np.any(shifted > 1.0 + tolerance):
+                        continue
+                    if np.any(
+                        np.all(
+                            np.isclose(existing[key], shifted, atol=tolerance, rtol=0),
+                            axis=1,
+                        )
+                    ):
+                        continue
+                    existing[key].append(shifted)
+                sources.append(index)
+                shifts.append(direction)
+        if len(sources) == atom_coord.shape[0]:
+            return atom_types, atom_coord, batch_idx
+
+        sources = paddle.to_tensor(sources, dtype="int64", place=atom_coord.place)
+        shifts = paddle.to_tensor(
+            np.asarray(shifts), dtype=atom_coord.dtype, place=atom_coord.place
+        )
+        expanded_batch = batch_idx[sources]
+        offset = paddle.bmm(shifts.unsqueeze(1), cell[expanded_batch]).squeeze(1)
+        return atom_types[sources], atom_coord[sources] + offset, expanded_batch
+
     def _forward_density(self, atom_types, atom_coord, grid, batch_idx, info):
         device = atom_coord.place
 
@@ -685,6 +750,13 @@ class GPWNO(paddle.nn.Layer):
 
         atom_types = atom_types.to(device)
         grid = grid.to(device)
+
+        if self.pbc:
+            if cell is None:
+                raise ValueError("Periodic GPWNO requires info['cell'].")
+            atom_types, atom_coord, batch_idx = self._expand_boundary_atoms(
+                atom_types, atom_coord, batch_idx, cell
+            )
 
         feat = self.embedding(atom_types)
         n_graph, n_sample = grid.shape[0], grid.shape[1]

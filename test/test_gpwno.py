@@ -14,9 +14,23 @@
 
 import numpy as np
 import paddle
+import pgl
 import pytest
 
+from ppmat.datasets.build_grid import BuildGrid
+from ppmat.models import MODEL_REGISTRY
 from ppmat.models.gpwno.GPWNO import GPWNO
+
+
+@pytest.mark.parametrize(
+    "model_name",
+    ["gpwno_md17_benzene", "gpwno_md17_ethane", "gpwno_mp", "gpwno_qm9"],
+)
+def test_pretrained_model_registry(model_name):
+    assert MODEL_REGISTRY[model_name] == (
+        "https://paddle-org.bj.bcebos.com/"
+        f"paddlematerials/checkpoints/electronic_structure/gpwno/{model_name}.zip"
+    )
 
 
 def build_small_model(**overrides):
@@ -165,3 +179,176 @@ def test_local_density_input_matches_independent_graphs(model_sharing, periodic)
     np.testing.assert_allclose(
         prediction.numpy(), paddle.concat(separate).numpy(), rtol=1e-5, atol=1e-5
     )
+
+
+@pytest.mark.parametrize("skewed", [False, True])
+def test_periodic_boundary_images_match_legacy_order_and_are_idempotent(skewed):
+    matrix = (
+        [[4.0, 0.4, 0.2], [0.0, 3.0, 0.3], [0.1, 0.2, 5.0]] if skewed else np.eye(3) * 4
+    )
+    cell = paddle.to_tensor([matrix], dtype="float32")
+    fractional = paddle.to_tensor(
+        [[0.0, 0.25, 0.5], [0.2, 0.4, 0.6], [0.5, 0.0, 0.0]], dtype="float32"
+    )
+    atoms = fractional @ cell[0]
+    atom_types = paddle.to_tensor([0, 1, 2], dtype="int64")
+    batch = paddle.zeros([3], dtype="int64")
+    original = atoms.numpy().copy()
+    expanded_types, expanded_atoms, expanded_batch = GPWNO._expand_boundary_atoms(
+        atom_types, atoms, batch, cell
+    )
+    sources = np.array([0, 0, 1, 2, 2, 2, 2])
+    shifts = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 0, 0], [0, 0, 0], [0, 1, 0], [0, 0, 1], [0, 1, 1]]
+    )
+    np.testing.assert_array_equal(expanded_types.numpy(), atom_types.numpy()[sources])
+    np.testing.assert_allclose(
+        expanded_atoms.numpy(),
+        original[sources] + shifts @ np.asarray(matrix),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    np.testing.assert_array_equal(expanded_batch.numpy(), np.zeros(7))
+    np.testing.assert_array_equal(atoms.numpy(), original)
+    repeated = GPWNO._expand_boundary_atoms(
+        expanded_types, expanded_atoms, expanded_batch, cell
+    )
+    for actual, expected in zip(
+        repeated, (expanded_types, expanded_atoms, expanded_batch)
+    ):
+        assert actual is expected
+
+
+def test_periodic_boundary_images_use_each_graph_cell_and_species():
+    cells = paddle.to_tensor([np.eye(3) * 3, np.eye(3) * 5], dtype="float32")
+    atom_types = paddle.to_tensor([0, 1, 0, 1], dtype="int64")
+    atoms = paddle.to_tensor(
+        [[0, 0.6, 0.9], [0, 0.6, 0.9], [0, 1.0, 1.5], [1, 1, 1]], dtype="float32"
+    )
+    batch = paddle.to_tensor([0, 0, 1, 1], dtype="int64")
+    expanded = GPWNO._expand_boundary_atoms(atom_types, atoms, batch, cells)
+    expected_types, expected_atoms, expected_batch = [], [], []
+    for index in range(2):
+        selected = batch == index
+        types, positions, local_batch = GPWNO._expand_boundary_atoms(
+            atom_types[selected],
+            atoms[selected],
+            paddle.zeros([2], dtype="int64"),
+            cells[index : index + 1],
+        )
+        expected_types.append(types)
+        expected_atoms.append(positions)
+        expected_batch.append(local_batch + index)
+    for actual, expected in zip(
+        expanded, (expected_types, expected_atoms, expected_batch)
+    ):
+        np.testing.assert_allclose(actual.numpy(), paddle.concat(expected).numpy())
+    assert expanded[0].shape[0] == 7
+
+
+def test_periodic_boundary_images_preserve_coordinate_and_cell_gradients():
+    atoms = paddle.to_tensor([[0.0, 0.4, 0.5]], stop_gradient=False)
+    cell = paddle.to_tensor([np.eye(3) * 2], dtype="float32", stop_gradient=False)
+    _, positions, _ = GPWNO._expand_boundary_atoms(
+        paddle.zeros([1], dtype="int64"), atoms, paddle.zeros([1], dtype="int64"), cell
+    )
+    positions.sum().backward()
+    np.testing.assert_array_equal(atoms.grad.numpy(), [[2, 2, 2]])
+    np.testing.assert_array_equal(
+        cell.grad.numpy(), [[[1, 1, 1], [0, 0, 0], [0, 0, 0]]]
+    )
+
+
+@pytest.mark.parametrize("offset", [0.0, 1e-7])
+def test_periodic_corner_images_tolerate_coordinate_roundoff(offset):
+    cell = paddle.eye(3).unsqueeze(0) * 2
+    expanded = GPWNO._expand_boundary_atoms(
+        paddle.zeros([1], dtype="int64"),
+        paddle.to_tensor([[offset, 0.0, 0.0]]),
+        paddle.zeros([1], dtype="int64"),
+        cell,
+    )
+    assert expanded[0].shape[0] == 8
+    repeated = GPWNO._expand_boundary_atoms(*expanded, cell)
+    for actual, expected in zip(repeated, expanded):
+        assert actual is expected
+
+
+@pytest.mark.parametrize("local_density", [False, True])
+def test_periodic_prediction_expands_boundaries_without_mutating_graph(local_density):
+    model = build_small_model(
+        pbc=True,
+        use_max_cell=False,
+        equivariant_frame=False,
+        input_local_density=local_density,
+        model_sharing=False,
+    )
+    model.eval()
+    positions = np.asarray([[0.0, 0.7, 1.0], [1.2, 1.4, 1.6]], dtype=np.float32)
+    graph = pgl.Graph(
+        edges=np.empty((0, 2), dtype=np.int64),
+        num_nodes=2,
+        node_feat={
+            "x": np.asarray([0, 1], dtype=np.int64),
+            "cart_coords": positions.copy(),
+        },
+    )
+    grid = BuildGrid(format="array")(
+        {
+            "shape": (2, 2, 2),
+            "origin": np.asarray([0.1, 0.2, 0.3]),
+            "voxel_vectors": np.eye(3) * 2,
+        }
+    )
+    with paddle.no_grad():
+        full = model.predict({"graph": graph, "grid": grid, "grid_batch_size": 8})[
+            "density"
+        ]
+        chunked = model.predict({"graph": graph, "grid": grid, "grid_batch_size": 2})[
+            "density"
+        ]
+        expected, _ = model._forward_density(
+            paddle.to_tensor([0, 0, 1], dtype="int64"),
+            paddle.to_tensor(
+                [positions[0], positions[0] + [4, 0, 0], positions[1]], dtype="float32"
+            ),
+            paddle.to_tensor(grid.cartesian_coordinates(), dtype="float32").reshape(
+                [1, -1, 3]
+            ),
+            paddle.zeros([3], dtype="int64"),
+            {"cell": paddle.eye(3).unsqueeze(0) * 4},
+        )
+    np.testing.assert_allclose(
+        full.numpy(), expected.numpy().reshape(-1), rtol=1e-5, atol=1e-5
+    )
+    np.testing.assert_allclose(full.numpy(), chunked.numpy(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_array_equal(graph.node_feat["cart_coords"].numpy(), positions)
+
+    model.train()
+    output = model(
+        {
+            "graph": graph,
+            "grid_coord": paddle.to_tensor(
+                grid.cartesian_coordinates(), dtype="float32"
+            ).reshape([1, -1, 3]),
+            "density": paddle.ones([1, 8]),
+            "info": {"cell": paddle.eye(3).unsqueeze(0) * 4},
+        }
+    )
+    loss = output["loss_dict"]["loss"]
+    assert bool(paddle.isfinite(loss))
+    loss.backward()
+    assert model.embedding.weight.grad is not None
+    assert bool(paddle.isfinite(model.embedding.weight.grad).all())
+
+
+def test_periodic_prediction_requires_cell():
+    model = build_small_model(pbc=True)
+    with pytest.raises(ValueError, match="requires info"):
+        model._forward_density(
+            paddle.zeros([1], dtype="int64"),
+            paddle.zeros([1, 3]),
+            paddle.zeros([1, 2, 3]),
+            paddle.zeros([1], dtype="int64"),
+            None,
+        )
